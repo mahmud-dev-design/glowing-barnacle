@@ -18,21 +18,26 @@ from sqlalchemy import create_engine, text
 from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-# ==================== EDIT THESE TWO VALUES ====================
-BOT_TOKEN = "PASTE_YOUR_BOTFATHER_TOKEN_HERE"
-OWNER_ID = 123456789  # Your numeric Telegram user ID
-# ===============================================================
-# Render dashboard Environment: DATABASE_URL = your external PostgreSQL URL.
-# Do not put your database URL in a public GitHub repository.
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+# Credentials can be supplied in Render Environment Variables (recommended),
+# or entered directly below for private/local hosting.
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "PASTE_YOUR_BOTFATHER_TOKEN_HERE"
+_OWNER_ID_RAW = os.getenv("OWNER_ID", "").strip() or "123456789"
+try:
+    OWNER_ID = int(_OWNER_ID_RAW)
+except ValueError as exc:
+    raise RuntimeError("OWNER_ID must contain only your numeric Telegram user ID.") from exc
+
+# Render dashboard Environment: DATABASE_URL = your PostgreSQL connection URL.
+# Do not put database credentials in a public GitHub repository.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("prime_store")
 
 if not BOT_TOKEN or ":" not in BOT_TOKEN or BOT_TOKEN.startswith("PASTE_"):
-    raise RuntimeError("Open bot.py and set BOT_TOKEN to your BotFather token.")
-if not isinstance(OWNER_ID, int) or OWNER_ID == 123456789:
-    raise RuntimeError("Open bot.py and set OWNER_ID to your Telegram numeric ID.")
+    raise RuntimeError("BOT_TOKEN is missing. Add BOT_TOKEN in Render Environment, or set it in bot.py.")
+if OWNER_ID <= 0 or OWNER_ID == 123456789:
+    raise RuntimeError("OWNER_ID is missing. Add OWNER_ID in Render Environment, or set it in bot.py.")
 
 if DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
