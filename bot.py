@@ -19,11 +19,8 @@ from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # ==================== EDIT THESE TWO VALUES ====================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_YOUR_BOTFATHER_TOKEN_HERE").strip()
-try:
-    OWNER_ID = int(os.getenv("OWNER_ID", "123456789").strip())
-except ValueError:
-    raise RuntimeError("OWNER_ID must be a numeric Telegram user ID.")
+BOT_TOKEN = "PASTE_YOUR_BOTFATHER_TOKEN_HERE"
+OWNER_ID = 123456789  # Your numeric Telegram user ID
 # ===============================================================
 # Render dashboard Environment: DATABASE_URL = your external PostgreSQL URL.
 # Do not put your database URL in a public GitHub repository.
@@ -215,14 +212,14 @@ async def callbacks(c: CallbackQuery, state: FSMContext):
         ps=db("SELECT * FROM packages WHERE active=1 ORDER BY id",fetch=True,many=True)
         if not ps: await c.message.answer('No point packages available.'); await c.answer(); return
         for p in ps:
-            await c.message.answer(f"<b>{escape(p['title'])}</b>\nPoints: {p['points']}\nPrice: {escape(str(p['price']))} USDT",reply_markup=kb([[('💳 Request payment',f"paypkg:{p['id']}")]]))
+            await c.message.answer(f"<b>{escape(p['title'])}</b>\nPoints: {p['points']}\nPrice: ৳{escape(str(p['price']))} BDT",reply_markup=kb([[('💳 Request payment',f"paypkg:{p['id']}")]]))
         await c.answer(); return
     if data.startswith('paypkg:'):
         p=db("SELECT * FROM packages WHERE id=:id AND active=1",{'id':int(data.split(':')[1])},True)
         if not p: await c.answer('Package not found',show_alert=True); return
         await state.update_data(package_id=p['id'], pay_amount=str(p['price']), pay_points=int(p['points']))
         await state.set_state(Wizard.payment_method)
-        methods=setting('payment_methods','bKash,Nagad,Rocket,Binance/USDT').split(',')
+        methods=setting('payment_methods','bKash,Nagad,Rocket,Upay').split(',')
         await c.message.answer('Choose payment method:',reply_markup=kb([[(x.strip(),f"method:{x.strip()}")] for x in methods if x.strip()]))
         await c.answer(); return
     if data.startswith('method:'):
@@ -258,7 +255,7 @@ async def callbacks(c: CallbackQuery, state: FSMContext):
     elif data=='a_packages':
         ps=db("SELECT * FROM packages ORDER BY id DESC",fetch=True,many=True)
         if not ps: await c.message.answer('No packages yet.')
-        for p in ps: await c.message.answer(f"#{p['id']} {escape(p['title'])}: {p['points']} pts / {escape(str(p['price']))} USDT",reply_markup=kb([[('🗑 Delete',f"del_pkg:{p['id']}")]]))
+        for p in ps: await c.message.answer(f"#{p['id']} {escape(p['title'])}: {p['points']} pts / ৳{escape(str(p['price']))} BDT",reply_markup=kb([[('🗑 Delete',f"del_pkg:{p['id']}")]]))
     elif data.startswith('del_pkg:'): db("UPDATE packages SET active=0 WHERE id=:id",{'id':int(data.split(':')[1])}); await c.message.answer('Package disabled.')
     elif data=='a_promo': await state.set_state(Wizard.promo_code); await c.message.answer('Send promo code to create (or /cancel to cancel):'); await state.update_data(admin_creating_promo=True)
     elif data=='a_promos':
@@ -273,9 +270,9 @@ async def callbacks(c: CallbackQuery, state: FSMContext):
         for x in cs: await c.message.answer(f"{escape(x['title'])} — {escape(x['chat_id'])}",reply_markup=kb([[('🗑 Remove',f"del_channel:{x['chat_id']}")]]))
     elif data.startswith('del_channel:'): db("DELETE FROM channels WHERE chat_id=:id",{'id':data.split(':',1)[1]}); await c.message.answer('Channel removed.')
     elif data=='a_paydetails':
-        await c.message.answer('Choose method to set details:',reply_markup=kb([[('bKash','setpay:bKash'),('Nagad','setpay:Nagad')],[('Rocket','setpay:Rocket'),('Binance/USDT','setpay:Binance/USDT')],[('Payment methods list','showmethods')]]))
+        await c.message.answer('Choose method to set details:',reply_markup=kb([[('bKash','setpay:bKash'),('Nagad','setpay:Nagad')],[('Rocket','setpay:Rocket'),('Upay','setpay:Upay')],[('Payment methods list','showmethods')]]))
     elif data.startswith('setpay:'): await state.update_data(pay_method=data.split(':',1)[1]); await state.set_state(Wizard.set_pay_details); await c.message.answer('Send payment details/instructions for this method:')
-    elif data=='showmethods': await c.message.answer('Configured methods:\n'+'\n'.join([m+': '+setting('payment_'+m,'Not set') for m in ['bKash','Nagad','Rocket','Binance/USDT']]))
+    elif data=='showmethods': await c.message.answer('Configured methods:\n'+'\n'.join([m+': '+setting('payment_'+m,'Not set') for m in ['bKash','Nagad','Rocket','Upay']]))
     elif data=='a_payments':
         ps=db("SELECT * FROM payments WHERE status='pending' ORDER BY id",fetch=True,many=True)
         if not ps: await c.message.answer('No pending payments.')
@@ -340,7 +337,7 @@ async def text_wizard(m: Message, state: FSMContext):
     elif st=='Wizard:package_title': await state.update_data(title=val); await state.set_state(Wizard.package_points); await m.answer('Step 2/3 — Points included:')
     elif st=='Wizard:package_points':
         if not val.isdigit() or int(val)<1: await m.answer('Enter points as a positive whole number.'); return
-        await state.update_data(points=int(val)); await state.set_state(Wizard.package_price); await m.answer('Step 3/3 — Price in USDT (e.g. 1.50):')
+        await state.update_data(points=int(val)); await state.set_state(Wizard.package_price); await m.answer('Step 3/3 — Price in Taka / BDT (e.g. 100):')
     elif st=='Wizard:package_price':
         try: price=str(Decimal(val))
         except InvalidOperation: await m.answer('Enter a valid price, e.g. 1.50.'); return
