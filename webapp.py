@@ -65,6 +65,7 @@ INDEX_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="offerwall-verification" content="6ae7b427ba0c5dd5303e9b0a">
 <title>HB FILE STORE</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
