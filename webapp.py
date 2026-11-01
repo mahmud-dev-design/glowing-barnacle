@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import json
 import os
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 
 from aiohttp import web
 from sqlalchemy import create_engine, text
@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 OFFERWALL_URL = os.getenv("OFFERWALL_URL", "").strip()
+OFFERWALL_PUBLIC_KEY = os.getenv("OFFERWALL_PUBLIC_KEY", "").strip()
 OFFERWALL_SECRET = os.getenv("OFFERWALL_SECRET", "").strip()
 POINTS_PER_REWARD = float(os.getenv("POINTS_PER_REWARD", "1"))
 
@@ -58,6 +59,22 @@ def get_points(user_id: int):
             {"uid": user_id},
         ).fetchone()
     return int(row[0]) if row else 0
+
+
+def make_offerwall_url(user_id: int):
+    """Create Offerwall.me's required short-lived signed user URL."""
+    if not OFFERWALL_PUBLIC_KEY or not OFFERWALL_SECRET:
+        return OFFERWALL_URL
+    expires = str(int(__import__("time").time()) + 3600)
+    message = f"offerwall-user-v1\n{OFFERWALL_PUBLIC_KEY}\n{user_id}\n{expires}"
+    signature = hmac.new(
+        OFFERWALL_SECRET.encode("utf-8"), message.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return (
+        f"https://offerwall.me/offerwall/{quote(OFFERWALL_PUBLIC_KEY, safe='')}"
+        f"/{quote(str(user_id), safe='')}?identityExpires={expires}"
+        f"&identitySignature={signature}"
+    )
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -138,7 +155,7 @@ async def me(request):
         return web.json_response({
             "first_name": user["first_name"],
             "points": get_points(user["id"]),
-            "offerwall_url": OFFERWALL_URL,
+            "offerwall_url": make_offerwall_url(user["id"]),
         })
     except Exception:
         return web.json_response({"error": "Service temporarily unavailable."}, status=503)
@@ -146,35 +163,62 @@ async def me(request):
 
 
 async def postback(request):
-    """Offerwall.me S2S callback: MD5(subId + transId + reward + secret)."""
+    """Offerwall.me S2S callback; accepts query, form, or JSON POST data."""
     if not OFFERWALL_SECRET:
         return web.Response(text="postback not configured", status=503)
-    q = request.rel_url.query
-    sub_id, trans_id = q.get("subId", ""), q.get("transId", "")
-    reward_raw, status, signature = q.get("reward", ""), q.get("status", ""), q.get("signature", "")
-    if not all([sub_id, trans_id, reward_raw, status, signature]):
+
+    # Offerwall.me sends HTTP POST. Accept query parameters too for provider tests.
+    params = dict(request.rel_url.query)
+    try:
+        if request.method == "POST":
+            ctype = request.content_type.lower()
+            if ctype == "application/json":
+                body = await request.json()
+                if isinstance(body, dict):
+                    params.update({str(k): str(v) for k, v in body.items() if v is not None})
+            else:
+                form = await request.post()
+                params.update({str(k): str(v) for k, v in form.items() if v is not None})
+    except Exception:
+        return web.Response(text="invalid request body", status=400)
+
+    sub_id = params.get("subId", "").strip()
+    trans_id = params.get("transId", "").strip()
+    reward_raw = params.get("reward", "").strip()
+    status = params.get("status", "").strip()
+    signature = params.get("signature", "").strip()
+    if not all((sub_id, trans_id, reward_raw, status, signature)):
         return web.Response(text="missing parameters", status=400)
+    if status not in ("1", "2"):
+        return web.Response(text="ignored", status=200)
+
     try:
         user_id = int(sub_id)
         reward = float(reward_raw)
-        points = int(round(reward * POINTS_PER_REWARD))
-        if reward < 0 or points <= 0:
+        if user_id <= 0 or not trans_id or not (reward >= 0):
             raise ValueError()
-    except (ValueError, TypeError):
+        points = int(round(reward * POINTS_PER_REWARD))
+        if status == "1" and points <= 0:
+            raise ValueError()
+    except (ValueError, TypeError, OverflowError):
         return web.Response(text="invalid values", status=400)
-    expected = hashlib.md5(f"{sub_id}{trans_id}{reward_raw}{OFFERWALL_SECRET}".encode()).hexdigest()
+
+    # Exact Offerwall.me formula: md5(subId + transId + reward + secretKey).
+    expected = hashlib.md5(
+        f"{sub_id}{trans_id}{reward_raw}{OFFERWALL_SECRET}".encode("utf-8")
+    ).hexdigest()
     if not hmac.compare_digest(expected.lower(), signature.lower()):
         return web.Response(text="invalid signature", status=403)
-    if status not in ("1", "2"):
-        return web.Response(text="ignored", status=200)
+
     try:
         with engine.begin() as conn:
             conn.execute(text("""CREATE TABLE IF NOT EXISTS offerwall_transactions (
                 trans_id TEXT PRIMARY KEY, user_id BIGINT NOT NULL, points INTEGER NOT NULL,
                 status TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"""))
             old = conn.execute(text(
-                "SELECT status, points FROM offerwall_transactions WHERE trans_id=:tid FOR UPDATE"
+                "SELECT status, points, user_id FROM offerwall_transactions WHERE trans_id=:tid FOR UPDATE"
             ), {"tid": trans_id}).fetchone()
+
             if status == "1":
                 if old:
                     return web.Response(text="duplicate", status=200)
@@ -191,11 +235,13 @@ async def postback(request):
             else:
                 if not old or old[0] != "approved":
                     return web.Response(text="already reversed or unknown", status=200)
+                # Use the original credited account and amount for a safe reversal.
+                original_user_id = int(old[2])
                 conn.execute(text("UPDATE users SET points=GREATEST(points-:p,0) WHERE user_id=:u"),
-                             {"p": int(old[1]), "u": user_id})
+                             {"p": int(old[1]), "u": original_user_id})
                 conn.execute(text("UPDATE offerwall_transactions SET status='reversed' WHERE trans_id=:t"),
                              {"t": trans_id})
-        return web.Response(text="OK", status=200)
+        return web.Response(text="ok", status=200)
     except Exception:
         return web.Response(text="temporary error", status=500)
 
