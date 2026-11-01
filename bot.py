@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
-                           InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton)
+                           InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo)
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -30,9 +30,10 @@ except ValueError as exc:
 # Render dashboard Environment: DATABASE_URL = your PostgreSQL connection URL.
 # Do not put database credentials in a public GitHub repository.
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+MINI_APP_URL = os.getenv("MINI_APP_URL", "https://hb-file-store-miniapp.onrender.com").strip()
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("prime_store")
+log = logging.getLogger("hb_file_store")
 
 if not BOT_TOKEN or ":" not in BOT_TOKEN or BOT_TOKEN.startswith("PASTE_"):
     raise RuntimeError("BOT_TOKEN is missing. Add BOT_TOKEN in Render Environment, or set it in bot.py.")
@@ -45,7 +46,7 @@ if DATABASE_URL:
     engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
 else:
     # Local testing only. Render's local disk is ephemeral; use a persistent external DB.
-    engine = create_engine("sqlite:///prime_store.db", connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite:///hb_file_store.db", connect_args={"check_same_thread": False})
     log.warning("DATABASE_URL not set: SQLite is for local testing only and may lose data on Render.")
 
 
@@ -116,7 +117,10 @@ def main_kb(uid):
             [("💳 Add points", "packages"), ("🧾 My purchases", "purchases")],
             [("💬 Support", "support")]]
     if is_admin(uid): rows.append([("🛠 Admin panel", "admin")])
-    return kb(rows)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Open HB FILE STORE", web_app=WebAppInfo(url=MINI_APP_URL))],
+        *[[InlineKeyboardButton(text=t, callback_data=d) for t, d in row] for row in rows]
+    ])
 
 def admin_kb():
     return kb([[('📁 Add file','a_file'),('📚 File list / delete','a_files')],
@@ -131,7 +135,7 @@ def admin_kb():
       [('⬅️ Main menu','home')]])
 
 async def send_home(m: Message):
-    await m.answer("<b>PRIME STORE</b>\nChoose an option below.", reply_markup=main_kb(m.from_user.id))
+    await m.answer("<b>HB FILE STORE</b>\nChoose an option below.", reply_markup=main_kb(m.from_user.id))
 
 @dp.message(CommandStart())
 async def start(m: Message, state: FSMContext):
