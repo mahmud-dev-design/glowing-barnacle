@@ -10,6 +10,8 @@ from sqlalchemy import create_engine, text
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 OFFERWALL_URL = os.getenv("OFFERWALL_URL", "").strip()
+OFFERWALL_SECRET = os.getenv("OFFERWALL_SECRET", "").strip()
+POINTS_PER_REWARD = float(os.getenv("POINTS_PER_REWARD", "1"))
 
 if not BOT_TOKEN or ":" not in BOT_TOKEN:
     raise RuntimeError("Set BOT_TOKEN in this Render service's Environment.")
@@ -141,6 +143,62 @@ async def me(request):
         return web.json_response({"error": "Service temporarily unavailable."}, status=503)
 
 
+
+async def postback(request):
+    """Offerwall.me S2S callback: MD5(subId + transId + reward + secret)."""
+    if not OFFERWALL_SECRET:
+        return web.Response(text="postback not configured", status=503)
+    q = request.rel_url.query
+    sub_id, trans_id = q.get("subId", ""), q.get("transId", "")
+    reward_raw, status, signature = q.get("reward", ""), q.get("status", ""), q.get("signature", "")
+    if not all([sub_id, trans_id, reward_raw, status, signature]):
+        return web.Response(text="missing parameters", status=400)
+    try:
+        user_id = int(sub_id)
+        reward = float(reward_raw)
+        points = int(round(reward * POINTS_PER_REWARD))
+        if reward < 0 or points <= 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return web.Response(text="invalid values", status=400)
+    expected = hashlib.md5(f"{sub_id}{trans_id}{reward_raw}{OFFERWALL_SECRET}".encode()).hexdigest()
+    if not hmac.compare_digest(expected.lower(), signature.lower()):
+        return web.Response(text="invalid signature", status=403)
+    if status not in ("1", "2"):
+        return web.Response(text="ignored", status=200)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""CREATE TABLE IF NOT EXISTS offerwall_transactions (
+                trans_id TEXT PRIMARY KEY, user_id BIGINT NOT NULL, points INTEGER NOT NULL,
+                status TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"""))
+            old = conn.execute(text(
+                "SELECT status, points FROM offerwall_transactions WHERE trans_id=:tid FOR UPDATE"
+            ), {"tid": trans_id}).fetchone()
+            if status == "1":
+                if old:
+                    return web.Response(text="duplicate", status=200)
+                user = conn.execute(text(
+                    "SELECT points FROM users WHERE user_id=:uid FOR UPDATE"
+                ), {"uid": user_id}).fetchone()
+                if not user:
+                    return web.Response(text="user not found", status=404)
+                conn.execute(text("UPDATE users SET points=points+:p WHERE user_id=:u"),
+                             {"p": points, "u": user_id})
+                conn.execute(text("""INSERT INTO offerwall_transactions
+                    (trans_id,user_id,points,status) VALUES (:t,:u,:p,'approved')"""),
+                             {"t": trans_id, "u": user_id, "p": points})
+            else:
+                if not old or old[0] != "approved":
+                    return web.Response(text="already reversed or unknown", status=200)
+                conn.execute(text("UPDATE users SET points=GREATEST(points-:p,0) WHERE user_id=:u"),
+                             {"p": int(old[1]), "u": user_id})
+                conn.execute(text("UPDATE offerwall_transactions SET status='reversed' WHERE trans_id=:t"),
+                             {"t": trans_id})
+        return web.Response(text="OK", status=200)
+    except Exception:
+        return web.Response(text="temporary error", status=500)
+
+
 async def health(request):
     return web.Response(text="ok")
 
@@ -148,6 +206,8 @@ async def health(request):
 app = web.Application()
 app.router.add_get("/", index)
 app.router.add_post("/api/me", me)
+app.router.add_get("/api/postback", postback)
+app.router.add_post("/api/postback", postback)
 app.router.add_get("/health", health)
 
 if __name__ == "__main__":
